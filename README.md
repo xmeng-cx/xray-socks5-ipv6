@@ -13,13 +13,13 @@
 ## 一键安装
 
 ```bash
-curl -sL https://raw.githubusercontent.com/YOUR_USERNAME/xray-socks5-ipv6/main/install.sh | bash -s
+curl -sL https://raw.githubusercontent.com/xmeng-cx/xray-socks5-ipv6/main/install.sh | bash -s
 ```
 
 或手动安装：
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/xray-socks5-ipv6.git
+git clone https://github.com/xmeng-cx/xray-socks5-ipv6.git
 cd xray-socks5-ipv6
 chmod +x install.sh
 ./install.sh

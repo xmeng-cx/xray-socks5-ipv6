@@ -33,20 +33,57 @@ def get_prefix():
         m = re.search(r'inet6 ([0-9a-f:]+)/(\d+)', line)
         if m:
             full = m.group(1)
-            parts = full.split(':')
-            if len(parts) >= 4:
-                prefix = ':'.join(parts[:4])
-                candidates.append(prefix)
-    for p in candidates:
-        low = p[-1].lower()
-        if low in ('0', '1', '2'):
-            return p
-    return candidates[0] if candidates else "2408:824e:cb06:a6a0"
+            plen = int(m.group(2))
+            candidates.append((full, plen))
+
+    for full, plen in candidates:
+        parts = full.split(':')
+        if plen <= 48:
+            return ':'.join(parts[:3]), 'wide'
+        if plen <= 52:
+            return ':'.join(parts[:3]), 'wide'
+        if plen <= 60:
+            subnet_nib = int(parts[3], 16) & 0xf
+            return ':'.join(parts[:3]) + ':' + parts[3][:3], 'narrow'
+        if plen == 64:
+            return ':'.join(parts[:4]), 'fixed'
+        if plen == 128:
+            continue
+
+    if candidates:
+        full, plen = candidates[0]
+        parts = full.split(':')
+        if plen == 128:
+            return ':'.join(parts[:4]), 'fixed'
+        return ':'.join(parts[:4]), 'fixed'
+
+    return "2408:824e:cb06:a6a0", 'fixed'
 
 
-def gen_ipv6(prefix):
-    host = ':'.join(f'{random.randint(0, 0xffff):04x}' for _ in range(4))
-    return f"{prefix}:{host}"
+PREFIX_CACHE = None
+
+
+def get_prefix_info():
+    global PREFIX_CACHE
+    if PREFIX_CACHE is None:
+        PREFIX_CACHE = get_prefix()
+    return PREFIX_CACHE
+
+
+def gen_ipv6(prefix, mode):
+    if mode == 'narrow':
+        subnet_nib = f'{random.randint(0, 0xf):x}'
+        fourth = prefix.split(':')[3] + subnet_nib if len(prefix.split(':')) >= 4 else subnet_nib
+        base = ':'.join(prefix.split(':')[:3])
+        host = ':'.join(f'{random.randint(0, 0xffff):04x}' for _ in range(4))
+        return f"{base}:{fourth}:{host}"
+    elif mode == 'wide':
+        subnet = f'{random.randint(0, 0xf):x}'
+        host = ':'.join(f'{random.randint(0, 0xffff):04x}' for _ in range(4))
+        return f"{prefix}:{subnet}:{host}"
+    else:
+        host = ':'.join(f'{random.randint(0, 0xffff):04x}' for _ in range(4))
+        return f"{prefix}:{host}"
 
 
 def is_ipv6_used(ipv6):
@@ -77,7 +114,7 @@ def del_ipv6(ipv6):
     return code == 0
 
 
-def clean_foreign_addresses(prefix):
+def clean_foreign_addresses(prefix, mode):
     stdout, _ = run_cmd(f"ip -6 addr show dev {INTERFACE} scope global | grep 'inet6'")
     for line in stdout.splitlines():
         if 'deprecated' in line or 'temporary' in line or 'tentative' in line:
@@ -85,8 +122,7 @@ def clean_foreign_addresses(prefix):
         m = re.search(r'inet6 ([0-9a-f:]+)/(\d+)', line)
         if m:
             addr = m.group(1)
-            addr_prefix = ':'.join(addr.split(':')[:4])
-            if addr_prefix != prefix:
+            if not addr.startswith(prefix):
                 del_ipv6(addr)
 
 
@@ -162,8 +198,10 @@ def index():
 
 @app.route('/api/status')
 def api_status():
+    global PREFIX_CACHE
+    PREFIX_CACHE = None
     state = load_state()
-    prefix = get_prefix()
+    prefix, mode = get_prefix_info()
     statuses = []
     for i in range(PORT_COUNT):
         port = START_PORT + i
@@ -177,6 +215,7 @@ def api_status():
     return jsonify({
         "ok": True,
         "prefix": prefix,
+        "mode": mode,
         "service": get_service_status(),
         "ports": statuses,
     })
@@ -184,11 +223,13 @@ def api_status():
 
 @app.route('/api/init', methods=['POST'])
 def api_init():
+    global PREFIX_CACHE
+    PREFIX_CACHE = None
     state = load_state()
-    prefix = get_prefix()
+    prefix, mode = get_prefix_info()
     used = set(state.values())
 
-    clean_foreign_addresses(prefix)
+    clean_foreign_addresses(prefix, mode)
 
     for i in range(PORT_COUNT):
         port = START_PORT + i
@@ -198,7 +239,7 @@ def api_init():
             used.discard(old_ipv6)
 
         while True:
-            new_ipv6 = gen_ipv6(prefix)
+            new_ipv6 = gen_ipv6(prefix, mode)
             if new_ipv6 not in used:
                 break
         used.add(new_ipv6)
@@ -216,9 +257,11 @@ def api_init():
 
 @app.route('/api/change', methods=['POST'])
 def api_change():
+    global PREFIX_CACHE
+    PREFIX_CACHE = None
     data = request.get_json() or {}
     state = load_state()
-    prefix = get_prefix()
+    prefix, mode = get_prefix_info()
     used = set(state.values())
     changed = []
 
@@ -240,7 +283,7 @@ def api_change():
             used.discard(old_ipv6)
 
         while True:
-            new_ipv6 = gen_ipv6(prefix)
+            new_ipv6 = gen_ipv6(prefix, mode)
             if new_ipv6 not in used:
                 break
         used.add(new_ipv6)
